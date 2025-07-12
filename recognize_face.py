@@ -1,109 +1,121 @@
+"""Face recognition command line utilities.
+
+Provides two main operations:
+
+- ``detect``: Detects faces in an image using either the HOG or CNN model and
+  optionally saves or displays the result.
+- ``recognize``: Given an image of a known face and an image that may contain
+  that person, highlights matching faces.
+
+Example::
+
+    python recognize_face.py detect office.jpg --model hog
+    python recognize_face.py recognize --known toby.jpg --unknown office.jpg
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import List, Tuple
+
 from PIL import Image, ImageDraw
 import face_recognition
 import numpy as np
 
-def find_all_faces_in_image_hog(image_path):
-    """
-    The function `find_all_faces_in_image_hog` uses the Histogram of Oriented Gradients (HOG) algorithm
-    to detect and display all faces in an image.
-    
-    :param image_path: The image_path parameter is the path to the image file that you want to find
-    faces in. It should be a string representing the file path, including the file extension (e.g.,
-    "path/to/image.jpg")
-    """
-    image = face_recognition.load_image_file(image_path)
 
-    face_locations = face_recognition.face_locations(image)
+FaceLocation = Tuple[int, int, int, int]
 
-    for face_location in face_locations:
 
-        # Print the location of each face in this image
-        top, right, bottom, left = face_location
+def load_image(path: Path) -> np.ndarray:
+    """Load an image from *path* into a ``numpy`` array."""
+    return face_recognition.load_image_file(str(path))
 
-        # Access the actual face:
-        face_image = image[top:bottom, left:right]
-        pil_image = Image.fromarray(face_image)
-        pil_image.show()
 
-def recognize_face_in_image(image_to_recognize, image_contained_face):
-    """
-    The `recognize_face_in_image` function takes in two images, one with a known face and one with
-    unknown faces, and uses face recognition to identify and draw a box around any matching faces in the
-    unknown image.
-    
-    :param image_to_recognize: The image file that contains the face you want to recognize. This image
-    will be used to create a face encoding that will be compared to the faces in the other image
-    :param image_contained_face: The parameter "image_contained_face" is the path or file object of the
-    image that contains the face(s) you want to recognize
-    """
-    known_image = face_recognition.load_image_file(image_to_recognize)
-    encoding = face_recognition.face_encodings(known_image)[0]
+def detect_faces(image: np.ndarray, model: str = "hog") -> List[FaceLocation]:
+    """Return face bounding boxes detected in *image*."""
+    return face_recognition.face_locations(image, model=model)
 
-    # Load an image with unknown faces
-    unknown_image = face_recognition.load_image_file(image_contained_face)
 
-    # Find all the faces and face encodings in the unknown image
-    face_locations = face_recognition.face_locations(unknown_image)
-    face_encodings = face_recognition.face_encodings(unknown_image, face_locations)
-
-    # Convert the image to a PIL-format image so that we can draw on top of it with the Pillow library
-    # See http://pillow.readthedocs.io/ for more about PIL/Pillow
-    pil_image = Image.fromarray(unknown_image)
-
-    # Create a Pillow ImageDraw Draw instance to draw with
+def draw_boxes(
+    image: np.ndarray,
+    boxes: List[FaceLocation],
+    color: Tuple[int, int, int] = (0, 255, 0),
+    width: int = 4,
+) -> Image.Image:
+    """Return a ``PIL.Image`` with *boxes* drawn on ``image``."""
+    pil_image = Image.fromarray(image)
     draw = ImageDraw.Draw(pil_image)
-
-    # Loop through each face found in the unknown image
-    for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-
-        # See if the face is a match for the known face(s)
-        matches = face_recognition.compare_faces([encoding], face_encoding)
-
-        # Use the known face with the smallest distance to the new face
-        face_distances = face_recognition.face_distance([encoding], face_encoding)
-        best_match_index = np.argmin(face_distances)
-        if matches[best_match_index]:
-
-            # Draw a box around the face using the Pillow module
-            draw.rectangle(((left - 20, top - 20), (right + 20, bottom + 20)), outline=(0, 255, 0), width=20)
-
-    # Remove the drawing library from memory as per the Pillow docs
+    for top, right, bottom, left in boxes:
+        draw.rectangle(((left, top), (right, bottom)), outline=color, width=width)
     del draw
+    return pil_image
 
-    # Display the resulting image
-    pil_image.show()
 
-def find_all_faces_in_image_cnn(image_path):
-    """
-    The function `find_all_faces_in_image_cnn` uses a convolutional neural network (CNN) model to detect
-    and display all faces in an image.
-    
-    :param image_path: The path to the image file that you want to find faces in
-    """
-    # Load the jpg file into a numpy array
-    image = face_recognition.load_image_file(image_path)
+def recognize_faces(
+    known_image_path: Path,
+    unknown_image_path: Path,
+    *,
+    model: str = "hog",
+) -> Tuple[np.ndarray, List[FaceLocation]]:
+    """Return ``unknown_image`` and bounding boxes of faces matching ``known_image``."""
+    known_image = load_image(known_image_path)
+    known_encoding = face_recognition.face_encodings(known_image)[0]
 
-    face_locations = face_recognition.face_locations(image, number_of_times_to_upsample=0, model="cnn")
+    unknown_image = load_image(unknown_image_path)
+    locations = detect_faces(unknown_image, model=model)
+    encodings = face_recognition.face_encodings(unknown_image, locations)
 
-    for face_location in face_locations:
+    matches: List[FaceLocation] = []
+    for location, encoding in zip(locations, encodings):
+        is_match = face_recognition.compare_faces([known_encoding], encoding)[0]
+        if is_match:
+            matches.append(location)
+    return unknown_image, matches
 
-        # Print the location of each face in this image
-        top, right, bottom, left = face_location
 
-        # Access the actual face
-        face_image = image[top:bottom, left:right]
-        pil_image = Image.fromarray(face_image)
-        pil_image.show()
+def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Face recognition utilities")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    detect_p = sub.add_parser("detect", help="Detect faces in an image")
+    detect_p.add_argument("image", type=Path, help="Image to analyze")
+    detect_p.add_argument("--model", choices=["hog", "cnn"], default="hog")
+    detect_p.add_argument("--output", type=Path, help="Save annotated image to file")
+    detect_p.add_argument("--no-show", action="store_true", help="Do not open a window to display the result")
+
+    rec_p = sub.add_parser("recognize", help="Recognize a known face in another image")
+    rec_p.add_argument("--known", type=Path, required=True, help="Image containing the known face")
+    rec_p.add_argument("--unknown", type=Path, required=True, help="Image that may contain the face")
+    rec_p.add_argument("--model", choices=["hog", "cnn"], default="hog")
+    rec_p.add_argument("--output", type=Path, help="Save annotated image to file")
+    rec_p.add_argument("--no-show", action="store_true")
+
+    return parser.parse_args(argv)
+
+
+def main(argv: List[str] | None = None) -> None:
+    args = parse_args(argv)
+
+    if args.command == "detect":
+        image = load_image(args.image)
+        boxes = detect_faces(image, model=args.model)
+        print(f"Found {len(boxes)} face(s)")
+        if args.output or not args.no_show:
+            result = draw_boxes(image, boxes)
+            if args.output:
+                result.save(args.output)
+            if not args.no_show:
+                result.show()
+    elif args.command == "recognize":
+        image, matches = recognize_faces(args.known, args.unknown, model=args.model)
+        print(f"Found {len(matches)} matching face(s)")
+        if args.output or not args.no_show:
+            result = draw_boxes(image, matches)
+            if args.output:
+                result.save(args.output)
+            if not args.no_show:
+                result.show()
+
 
 if __name__ == "__main__":
-    choice = int(input("Enter\n1.To find all faces in an image with cnn algorithm\n2.To find all faces in an image with hog algorithm\n3.To see if a face is in an image: "))
-
-    image_path = input("Enter the image filename: ")
-
-    if choice == 1:
-        find_all_faces_in_image_cnn(image_path)
-    elif choice == 2:
-        find_all_faces_in_image_hog(image_path)
-    elif choice == 3:
-        image_to_recognize = input("Enter the filename which contains the person's face: ")
-        recognize_face_in_image(image_to_recognize, image_path)
+    main()
